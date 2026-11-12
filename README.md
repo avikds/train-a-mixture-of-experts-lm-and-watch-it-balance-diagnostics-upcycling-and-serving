@@ -13,6 +13,7 @@ python scaffold.py
 - [x] **1.** domain_chains
 - [x] **2.** sample_corpus
 - [x] **3.** entropy_floor
+- [x] **4.** DenseFFN
 
 ---
 

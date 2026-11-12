@@ -170,3 +170,26 @@ def entropy_floor(P, mix, seq_len):
     # Calculate the mixture-weighted entropy floor.
     return float(np.sum(weights * domain_floors))
 
+# Step 4 - DenseFFN
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class DenseFFN(nn.Module):
+    def __init__(self, d, hidden):
+        super().__init__()
+
+        # First weight matrix: (d, hidden)
+        self.w1 = nn.Parameter(
+            torch.randn(d, hidden) * d ** -0.5
+        )
+
+        # Second weight matrix: (hidden, d)
+        self.w2 = nn.Parameter(
+            torch.randn(hidden, d) * hidden ** -0.5
+        )
+
+    def forward(self, x):
+        # Apply the first linear transformation, GELU, and the second transformation.
+        return F.gelu(x @ self.w1) @ self.w2
+
