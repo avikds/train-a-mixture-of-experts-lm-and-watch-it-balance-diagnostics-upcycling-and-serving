@@ -29,6 +29,7 @@ python scaffold.py
 - [x] **17.** update_expert_bias
 - [x] **18.** quantile_bias
 - [x] **19.** evaluate_lm
+- [x] **20.** train_lm
 
 ---
 

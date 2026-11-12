@@ -974,3 +974,187 @@ def evaluate_lm(model, tokens, batch=64):
         # Restore the model's original mode.
         model.train(was_training)
 
+# Step 20 - train_lm
+def train_lm(model, tokens, steps, batch=16, lr=3e-3, seed=0, balance="none", aux_coef=0.0, z_coef=0.0,
+             bias_rate=1e-2, bias_rule="sign", monitor=None, bug=None, warmup=0):
+
+    # Create a dedicated generator for reproducible minibatch sampling.
+    g = torch.Generator().manual_seed(303000 + seed)
+
+    # Number of available sequences.
+    n = tokens.shape[0]
+
+    # Initialize the AdamW optimizer without weight decay.
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=lr,
+        weight_decay=0.0
+    )
+
+    # Start in training mode.
+    model.train()
+
+    # Store one training record per step.
+    history = []
+
+    # Train for the requested number of steps.
+    for i in range(steps):
+
+        # --------------------------------------------------
+        # 1. Set the learning rate with optional warm-up.
+        # --------------------------------------------------
+
+        if warmup > 0:
+            current_lr = lr * min(1.0, (i + 1) / warmup)
+        else:
+            current_lr = lr
+
+        for param_group in opt.param_groups:
+            param_group["lr"] = current_lr
+
+        # --------------------------------------------------
+        # 2. Generate a reproducible minibatch.
+        # --------------------------------------------------
+
+        indices = torch.randint(
+            0,
+            n,
+            (batch,),
+            generator=g
+        )
+
+        batch_tokens = tokens[indices.to(tokens.device)]
+
+        # Inputs and next-token targets.
+        inputs = batch_tokens[:, :-1]
+        targets = batch_tokens[:, 1:]
+
+        # --------------------------------------------------
+        # 3. Forward pass and language-model loss.
+        # --------------------------------------------------
+
+        logits = model(inputs)
+
+        lm = F.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            targets.reshape(-1)
+        )
+
+        # Get the MoE layers.
+        moe_layers = model.moe_layers()
+
+        # --------------------------------------------------
+        # 4. Add auxiliary load-balancing loss when enabled.
+        # --------------------------------------------------
+
+        total_loss = lm
+
+        if balance == "aux":
+            aux_loss = lm.new_zeros(())
+
+            for m in moe_layers:
+                aux_loss = aux_loss + m.aux
+
+            total_loss = total_loss + aux_coef * aux_loss
+
+        # --------------------------------------------------
+        # 5. Add router z-loss when its coefficient is nonzero.
+        # --------------------------------------------------
+
+        if z_coef != 0:
+            z_loss = lm.new_zeros(())
+
+            for m in moe_layers:
+                z_loss = z_loss + m.z
+
+            total_loss = total_loss + z_coef * z_loss
+
+        # --------------------------------------------------
+        # 6. Backpropagation.
+        # --------------------------------------------------
+
+        opt.zero_grad(set_to_none=True)
+
+        total_loss.backward()
+
+        # Clip the gradient norm to 1.0.
+        # Keep the returned pre-clipping norm for monitoring.
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_norm=1.0
+        )
+
+        grad_norm = float(grad_norm.detach().item())
+
+        # --------------------------------------------------
+        # 7. Optional planted optimizer bug.
+        # --------------------------------------------------
+
+        if bug is not None:
+            snap = bug.before(model)
+
+        # Perform the optimizer update.
+        opt.step()
+
+        if bug is not None:
+            bug.after(model, snap)
+
+        # --------------------------------------------------
+        # 8. Update expert biases without gradients.
+        # --------------------------------------------------
+
+        with torch.no_grad():
+
+            for m in moe_layers:
+
+                if balance == "bias":
+                    # Fixed-step loss-free expert balancing.
+                    new_bias = update_expert_bias(
+                        m.bias,
+                        m.stats["counts"],
+                        bias_rate,
+                        bias_rule
+                    )
+
+                    m.bias.copy_(new_bias)
+
+                elif balance == "quantile":
+                    # Direct quantile-based expert balancing.
+                    new_bias = quantile_bias(
+                        m.stats["scores"],
+                        m.k,
+                        m.bias
+                    )
+
+                    m.bias.copy_(new_bias)
+
+        # --------------------------------------------------
+        # 9. Record training diagnostics.
+        # --------------------------------------------------
+
+        record = {
+            "step": i,
+            "loss": float(lm.detach().item()),
+            "grad_norm": grad_norm,
+            "maxvio": [
+                max_vio(m.stats["counts"])
+                for m in moe_layers
+            ]
+        }
+
+        # --------------------------------------------------
+        # 10. Optional training monitor and alarm collection.
+        # --------------------------------------------------
+
+        if monitor is not None:
+            record["alarms"] = monitor.update(
+                i,
+                float(lm.detach().item()),
+                grad_norm,
+                model
+            )
+
+        history.append(record)
+
+    return history
+
