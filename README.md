@@ -25,6 +25,7 @@ python scaffold.py
 - [x] **13.** router_sharpness
 - [x] **14.** expert_norm_ratios
 - [x] **15.** domain_purity
+- [x] **16.** layer_dashboard
 
 ---
 

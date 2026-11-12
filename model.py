@@ -772,3 +772,83 @@ def domain_purity(idx, token_domains, n_experts, n_domains):
     # Return the mean domain purity as a Python float.
     return float(purities.mean().item())
 
+# Step 16 - layer_dashboard
+def layer_dashboard(model, x, domains=None, n_domains=8):
+    # Remember the model's original training/evaluation mode.
+    was_training = model.training
+
+    try:
+        # Switch to evaluation mode.
+        model.eval()
+
+        # Perform exactly one forward pass without computing gradients.
+        with torch.no_grad():
+            model(x)
+
+            # Collect diagnostics from every MoE layer.
+            rows = []
+
+            for layer in model.moe_layers():
+                stats = layer.stats
+
+                # 1. Maximum load violation.
+                maxvio = max_vio(stats["counts"])
+
+                # 2. Router sharpness metrics.
+                sharpness = router_sharpness(
+                    stats["scores"],
+                    stats["weights"]
+                )
+
+                # 3. RMS log-sum-exp.
+                rms_lse = torch.sqrt(
+                    torch.mean(stats["lse"].float() ** 2)
+                ).item()
+
+                # 4. Expert output norm ratios.
+                norm_hi, norm_lo = expert_norm_ratios(
+                    stats["out_norm"]
+                )
+
+                # 5. Fraction of dropped assignments.
+                dropped = 1.0 - stats["kept"].float().mean().item()
+
+                # Build the diagnostic dictionary.
+                row = {
+                    "maxvio": round(maxvio, 3),
+                    "entropy": round(sharpness["entropy"], 3),
+                    "top_weight": round(sharpness["top_weight"], 3),
+                    "routed_size": round(sharpness["routed_size"], 3),
+                    "rms_lse": round(rms_lse, 3),
+                    "norm_hi": round(norm_hi, 3),
+                    "norm_lo": round(norm_lo, 3),
+                    "dropped": round(dropped, 4)
+                }
+
+                # 6. Calculate domain purity when domain labels are provided.
+                if domains is not None:
+                    # Expand each sequence's domain across its token positions.
+                    token_domains = (
+                        torch.as_tensor(domains)
+                        .reshape(-1, 1)
+                        .expand(-1, x.shape[1])
+                        .reshape(-1)
+                    )
+
+                    purity = domain_purity(
+                        stats["idx"],
+                        token_domains,
+                        layer.n_experts,
+                        n_domains
+                    )
+
+                    row["purity"] = round(purity, 3)
+
+                rows.append(row)
+
+        return rows
+
+    finally:
+        # Restore the model's original mode, even if an error occurs.
+        model.train(was_training)
+
