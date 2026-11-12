@@ -11,6 +11,7 @@ python scaffold.py
 ## Steps
 
 - [x] **1.** domain_chains
+- [x] **2.** sample_corpus
 
 ---
 
