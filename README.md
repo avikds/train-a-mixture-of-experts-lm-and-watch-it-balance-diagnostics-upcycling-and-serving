@@ -21,6 +21,7 @@ python scaffold.py
 - [x] **9.** apply_capacity
 - [x] **10.** MoEFFN
 - [x] **11.** param_counts
+- [x] **12.** max_vio
 
 ---
 

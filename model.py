@@ -635,3 +635,21 @@ def param_counts(model):
         "active": int(active)
     }
 
+# Step 12 - max_vio
+def max_vio(counts):
+    # Convert counts to a float64 PyTorch tensor.
+    counts = torch.as_tensor(counts, dtype=torch.float64)
+
+    # Calculate the mean expert load.
+    mean_load = counts.mean()
+
+    # Avoid division by zero when no assignments are present.
+    if mean_load.item() == 0:
+        return 0.0
+
+    # Calculate the maximum load violation.
+    max_violation = counts.max() / mean_load - 1.0
+
+    # Return a Python float.
+    return float(max_violation.item())
+
