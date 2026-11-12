@@ -1350,3 +1350,48 @@ class RunMonitor:
 
         return alarms
 
+# Step 23 - ExpertUpdateBug
+class ExpertUpdateBug:
+    def __init__(self, layer, expert, factor):
+        # Index of the MoE layer to modify.
+        self.layer = layer
+
+        # Index of the expert whose update will be amplified.
+        self.expert = expert
+
+        # Multiplier applied to the optimizer update.
+        self.factor = factor
+
+    def before(self, model):
+        # Get the selected MoE layer.
+        moe_layer = model.moe_layers()[self.layer]
+
+        # Save detached copies of the expert's weights before
+        # the optimizer update.
+        return (
+            moe_layer.w1[self.expert].detach().clone(),
+            moe_layer.w2[self.expert].detach().clone()
+        )
+
+    def after(self, model, snap):
+        # Get the selected MoE layer.
+        moe_layer = model.moe_layers()[self.layer]
+
+        # Retrieve the weights before the optimizer update.
+        old_w1, old_w2 = snap
+
+        # Amplify only this expert's optimizer update.
+        with torch.no_grad():
+
+            # Amplify the first weight matrix update.
+            new_w1 = moe_layer.w1[self.expert]
+            new_w1.copy_(
+                old_w1 + self.factor * (new_w1 - old_w1)
+            )
+
+            # Amplify the second weight matrix update.
+            new_w2 = moe_layer.w2[self.expert]
+            new_w2.copy_(
+                old_w2 + self.factor * (new_w2 - old_w2)
+            )
+

@@ -32,6 +32,7 @@ python scaffold.py
 - [x] **20.** train_lm
 - [x] **21.** upcycle_model
 - [x] **22.** RunMonitor
+- [x] **23.** ExpertUpdateBug
 
 ---
 
