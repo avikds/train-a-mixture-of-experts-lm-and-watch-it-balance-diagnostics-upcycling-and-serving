@@ -1405,3 +1405,431 @@ def set_serving(model, k=None, denom_k=None):
     # Return the updated model.
     return model
 
+# Step 25 - moe_study
+import copy
+
+
+def moe_study(seed=0, steps=300, batch=16, n_train=2000,
+              n_val=400, bug_steps=80, lr=3e-3):
+
+    # --------------------------------------------------
+    # 1. Experiment configuration and synthetic dataset.
+    # --------------------------------------------------
+
+    d, E, K, hid, H, T = 32, 8, 2, 64, 128, 32
+
+    mix = [0.75 ** i for i in range(8)]
+
+    # Generate domain-specific transition tables.
+    P = domain_chains(seed)
+
+    # Generate training and validation sequences.
+    train_tokens, _ = sample_corpus(
+        P, mix, n_train, T, seed
+    )
+
+    val, vdom = sample_corpus(
+        P, mix, n_val, T, seed + 1
+    )
+
+    V = 40
+
+    # Fixed validation probe and its planted domain labels.
+    probe = val[:128, :-1]
+    probe_domains = vdom[:128]
+
+    # Theoretical entropy floor.
+    floor = entropy_floor(P, mix, T)
+
+    # Number of steps in the first half of dense training.
+    half_steps = steps // 2
+    remaining_steps = steps - half_steps
+
+    # --------------------------------------------------
+    # 2. Train the dense reference model.
+    # --------------------------------------------------
+
+    torch.manual_seed(1000 + seed)
+
+    dense = TinyLM(
+        V, d, 2, T,
+        lambda i: DenseFFN(d, H)
+    )
+
+    # Train the dense model for the first half.
+    train_lm(
+        dense,
+        train_tokens,
+        half_steps,
+        batch=batch,
+        lr=lr,
+        seed=seed
+    )
+
+    # Validation loss at the halfway point.
+    dense_half = evaluate_lm(
+        dense, val, batch=batch
+    )
+
+    # Preserve a deep copy of the halfway dense model
+    # for the upcycling experiment.
+    dense_half_model = copy.deepcopy(dense)
+
+    # Continue dense training on the same corpus,
+    # using the next seed for minibatch sampling.
+    train_lm(
+        dense,
+        train_tokens,
+        remaining_steps,
+        batch=batch,
+        lr=lr,
+        seed=seed + 1
+    )
+
+    dense_val = evaluate_lm(
+        dense, val, batch=batch
+    )
+
+    # Record the dense reference results.
+    arms = {
+        "dense": {
+            "val": dense_val,
+            "params": param_counts(dense)
+        }
+    }
+
+    # --------------------------------------------------
+    # 3. Train the five MoE experimental variants.
+    # --------------------------------------------------
+
+    arm_specs = [
+        ("none", "softmax", "none", 0.0),
+        ("aux", "softmax", "aux", 0.1),
+        ("aux_strong", "softmax", "aux", 1.0),
+        ("bias", "softmax", "bias", 0.0),
+        ("sigmoid_bias", "sigmoid", "bias", 0.0)
+    ]
+
+    aux_model = None
+    aux_monitor = None
+
+    for name, score, balance, aux_coef in arm_specs:
+
+        # Reset the initialization seed before building each model.
+        torch.manual_seed(1000 + seed)
+
+        model = TinyLM(
+            V, d, 2, T,
+            lambda i, s=score: MoEFFN(
+                d, E, hid, K, score=s
+            )
+        )
+
+        # A fresh monitor is used for the ordinary auxiliary-loss arm.
+        monitor = RunMonitor() if name == "aux" else None
+
+        # Train the current experimental variant.
+        train_lm(
+            model,
+            train_tokens,
+            steps,
+            batch=batch,
+            lr=lr,
+            seed=seed,
+            balance=balance,
+            aux_coef=aux_coef,
+            monitor=monitor
+        )
+
+        # Evaluate on the common validation set.
+        val_loss = evaluate_lm(
+            model, val, batch=batch
+        )
+
+        # Collect the monitoring dashboard with domain labels.
+        dash = layer_dashboard(
+            model,
+            probe,
+            domains=probe_domains,
+            n_domains=8
+        )
+
+        # Store the arm's results.
+        arms[name] = {
+            "val": val_loss,
+            "dash": dash,
+            "params": param_counts(model)
+        }
+
+        # Keep the trained auxiliary-loss model for later experiments.
+        if name == "aux":
+            aux_model = model
+            aux_monitor = monitor
+
+    healthy_alarms = dict(aux_monitor.first)
+
+    aux_val = arms["aux"]["val"]
+
+    # --------------------------------------------------
+    # 4. Dense-to-MoE upcycling experiment.
+    # --------------------------------------------------
+
+    # Seed immediately before constructing the new MoE model.
+    torch.manual_seed(1000 + seed)
+
+    upcycled = upcycle_model(
+        dense_half_model,
+        lambda: TinyLM(
+            V, d, 2, T,
+            lambda i: MoEFFN(d, E, hid, K)
+        )
+    )
+
+    # Measure the validation loss immediately after upcycling.
+    upcycle_initial_val = evaluate_lm(
+        upcycled, val, batch=batch
+    )
+
+    # The initial parity gap should be close to zero.
+    parity_gap = abs(
+        upcycle_initial_val - dense_half
+    )
+
+    # Record the initial routing and expert diagnostics.
+    dash_start = layer_dashboard(
+        upcycled,
+        probe,
+        domains=probe_domains,
+        n_domains=8
+    )
+
+    # Continue training the upcycled model using the remaining steps.
+    train_lm(
+        upcycled,
+        train_tokens,
+        remaining_steps,
+        batch=batch,
+        lr=lr,
+        seed=seed + 1,
+        balance="aux",
+        aux_coef=0.1
+    )
+
+    upcycle_val = evaluate_lm(
+        upcycled, val, batch=batch
+    )
+
+    dash_end = layer_dashboard(
+        upcycled,
+        probe,
+        domains=probe_domains,
+        n_domains=8
+    )
+
+    upcycle_results = {
+        "parity_gap": parity_gap,
+        "dash_start": dash_start,
+        "val": upcycle_val,
+        "dash_end": dash_end
+    }
+
+    # --------------------------------------------------
+    # 5. Expert capacity experiments.
+    # --------------------------------------------------
+
+    capacity_results = {}
+
+    capacity_specs = [
+        ("cf1.0", 1.0, "probs"),
+        ("cf1.0_position", 1.0, "position"),
+        ("cf1.25", 1.25, "probs"),
+        ("cf0.5", 0.5, "probs")
+    ]
+
+    for name, factor, policy in capacity_specs:
+
+        # Apply the capacity configuration to every MoE layer.
+        for layer in aux_model.moe_layers():
+            layer.capacity_factor = factor
+            layer.drop_policy = policy
+
+        try:
+            # Measure validation loss under the capacity constraint.
+            capacity_val = evaluate_lm(
+                aux_model, val, batch=batch
+            )
+
+            # Measure the dropped-assignment fraction on a fixed probe.
+            capacity_dash = layer_dashboard(
+                aux_model,
+                val[:64, :-1]
+            )
+
+            dropped = [
+                row["dropped"]
+                for row in capacity_dash
+            ]
+
+            capacity_results[name] = {
+                "delta": capacity_val - aux_val,
+                "dropped": dropped
+            }
+
+        finally:
+            # Restore the original unrestricted routing configuration.
+            for layer in aux_model.moe_layers():
+                layer.capacity_factor = None
+                layer.drop_policy = "probs"
+
+    # --------------------------------------------------
+    # 6. Serving-time top-1 routing experiments.
+    # --------------------------------------------------
+
+    serving_results = {}
+
+    serving_specs = [
+        ("k1_over_top1", 1),
+        ("k1_over_top2", 2),
+        ("k1_over_top8", 8)
+    ]
+
+    for name, denominator in serving_specs:
+
+        # Use one expert per token while varying the denominator.
+        set_serving(
+            aux_model,
+            k=1,
+            denom_k=denominator
+        )
+
+        try:
+            serving_val = evaluate_lm(
+                aux_model, val, batch=batch
+            )
+
+            # Report the loss change relative to ordinary top-2 MoE.
+            serving_results[name] = serving_val - aux_val
+
+        finally:
+            # Restore the original top-2 training-time routing.
+            set_serving(aux_model)
+
+    # --------------------------------------------------
+    # 7. Prepare safe deep copies for the failure experiment.
+    # --------------------------------------------------
+
+    def detached_deepcopy(model):
+        """
+        Remove references to retained forward-pass computation graphs
+        before deep-copying the trained MoE model.
+        """
+        for layer in model.moe_layers():
+            if hasattr(layer, "aux"):
+                layer.aux = layer.aux.detach()
+
+            if hasattr(layer, "z"):
+                layer.z = layer.z.detach()
+
+        return copy.deepcopy(model)
+
+    failure_results = {}
+
+    # --------------------------------------------------
+    # 8. Run the clean and planted-bug experiments.
+    # --------------------------------------------------
+
+    for name in ("clean", "bug"):
+
+        # Both experiments start from the same trained auxiliary model.
+        trial_model = detached_deepcopy(aux_model)
+
+        # Each experiment receives a fresh monitor.
+        monitor = RunMonitor()
+
+        # Introduce the optimizer bug only in the bug experiment.
+        if name == "bug":
+            bug = ExpertUpdateBug(
+                layer=1,
+                expert=3,
+                factor=50.0
+            )
+        else:
+            bug = None
+
+        # Continue training for the requested number of steps.
+        history = train_lm(
+            trial_model,
+            train_tokens,
+            bug_steps,
+            batch=batch,
+            lr=1e-3,
+            seed=seed + 2,
+            balance="aux",
+            aux_coef=0.1,
+            monitor=monitor,
+            bug=bug
+        )
+
+        # Extract the language-model losses from the training history.
+        losses = [
+            record["loss"]
+            for record in history
+        ]
+
+        # Mean of the first ten training losses.
+        first_losses = losses[:10]
+
+        loss_first10 = (
+            sum(first_losses) / len(first_losses)
+            if first_losses else 0.0
+        )
+
+        # Mean of the last ten training losses.
+        last_losses = losses[-10:]
+
+        loss_last10 = (
+            sum(last_losses) / len(last_losses)
+            if last_losses else 0.0
+        )
+
+        # Final validation loss.
+        failure_val = evaluate_lm(
+            trial_model,
+            val,
+            batch=batch
+        )
+
+        # Inspect expert output norms on the common probe.
+        failure_dash = layer_dashboard(
+            trial_model,
+            probe,
+            domains=probe_domains,
+            n_domains=8
+        )
+
+        # Layer 1's maximum expert norm relative to its median.
+        norm_hi = failure_dash[1]["norm_hi"]
+
+        failure_results[name] = {
+            "first": dict(monitor.first),
+            "val": failure_val,
+            "loss_first10": float(loss_first10),
+            "loss_last10": float(loss_last10),
+            "norm_hi": float(norm_hi)
+        }
+
+    # --------------------------------------------------
+    # 9. Return the complete experimental results.
+    # --------------------------------------------------
+
+    return {
+        "floor": float(floor),
+        "arms": arms,
+        "healthy_alarms": healthy_alarms,
+        "dense_half": float(dense_half),
+        "upcycle": upcycle_results,
+        "capacity": capacity_results,
+        "serving": serving_results,
+        "failure": failure_results
+    }
+

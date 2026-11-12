@@ -34,6 +34,7 @@ python scaffold.py
 - [x] **22.** RunMonitor
 - [x] **23.** ExpertUpdateBug
 - [x] **24.** set_serving
+- [x] **25.** moe_study
 
 ---
 
