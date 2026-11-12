@@ -725,3 +725,50 @@ def expert_norm_ratios(norms):
         float(min_ratio.item())
     )
 
+# Step 15 - domain_purity
+def domain_purity(idx, token_domains, n_experts, n_domains):
+    # Ensure inputs are PyTorch tensors with integer indices.
+    idx = torch.as_tensor(idx, dtype=torch.long)
+    token_domains = torch.as_tensor(
+        token_domains,
+        dtype=torch.long,
+        device=idx.device
+    )
+
+    # Get the number of tokens and selected experts per token.
+    N, k = idx.shape
+
+    # Repeat each token's domain for all its expert assignments.
+    domains = token_domains.unsqueeze(1).expand(N, k)
+
+    # Encode each (expert, domain) pair into a unique index.
+    flat_indices = (
+        idx.reshape(-1) * n_domains
+        + domains.reshape(-1)
+    )
+
+    # Count assignments for every expert-domain combination.
+    counts = torch.bincount(
+        flat_indices,
+        minlength=n_experts * n_domains
+    ).reshape(n_experts, n_domains)
+
+    # Calculate the total assignments received by each expert.
+    expert_totals = counts.sum(dim=1)
+
+    # Consider only experts that received at least one assignment.
+    used = expert_totals > 0
+
+    # Return zero when no expert received any assignments.
+    if not used.any():
+        return 0.0
+
+    # Calculate the largest domain share for each used expert.
+    purities = (
+        counts.max(dim=1).values[used].float()
+        / expert_totals[used].float()
+    )
+
+    # Return the mean domain purity as a Python float.
+    return float(purities.mean().item())
+

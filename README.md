@@ -24,6 +24,7 @@ python scaffold.py
 - [x] **12.** max_vio
 - [x] **13.** router_sharpness
 - [x] **14.** expert_norm_ratios
+- [x] **15.** domain_purity
 
 ---
 
