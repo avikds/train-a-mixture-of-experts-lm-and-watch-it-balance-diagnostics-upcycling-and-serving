@@ -888,3 +888,42 @@ def update_expert_bias(bias, counts, rate, rule="sign"):
 
     return updated_bias.to(dtype=bias.dtype)
 
+# Step 18 - quantile_bias
+def quantile_bias(scores, k, bias):
+    # Number of tokens and experts.
+    N, E = scores.shape
+
+    # Ensure bias is on the same device and compatible with scores.
+    bias_work = bias.to(
+        device=scores.device,
+        dtype=scores.dtype
+    )
+
+    # Target number of assignments per expert.
+    target = (N * k) // E
+
+    # Step 1: Calculate the (k+1)-th largest biased score
+    # for each token. This gives the per-token margin alpha.
+    alpha = torch.topk(
+        scores + bias_work,
+        k=k + 1,
+        dim=-1
+    ).values[:, -1:]
+
+    # Step 2: Calculate scores minus the per-token margin.
+    adjusted_scores = scores - alpha
+
+    # Step 3: For each expert, find the (target+1)-th
+    # largest adjusted score across all tokens.
+    q = torch.topk(
+        adjusted_scores,
+        k=target + 1,
+        dim=0
+    ).values[-1]
+
+    # Step 4: Negate q and center the new bias to mean zero.
+    new_bias = q.mean() - q
+
+    # Return the new bias in the original bias dtype.
+    return new_bias.to(dtype=bias.dtype)
+
