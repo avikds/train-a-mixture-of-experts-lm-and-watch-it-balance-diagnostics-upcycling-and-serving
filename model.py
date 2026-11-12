@@ -393,3 +393,63 @@ def load_balance_loss(scores, idx, n_experts):
     # Switch-style load-balancing loss.
     return n_experts * (f * P).sum()
 
+# Step 9 - apply_capacity
+import math
+
+
+def apply_capacity(idx, w, n_experts, capacity_factor, policy="probs"):
+    # Number of tokens and experts selected per token.
+    N, k = idx.shape
+
+    # Calculate the maximum number of assignments each expert can accept.
+    cap = math.ceil(capacity_factor * N * k / n_experts)
+
+    # Flatten assignments in row-major order.
+    flat_idx = idx.reshape(-1)
+
+    # Determine the processing order.
+    if policy == "probs":
+        # Process assignments by descending routing weight.
+        # Stable sorting preserves original order when weights are tied.
+        order = torch.sort(
+            -w.reshape(-1),
+            stable=True
+        ).indices
+
+    elif policy == "position":
+        # Process assignments in their original flattened order.
+        order = torch.arange(
+            flat_idx.numel(),
+            device=idx.device
+        )
+
+    else:
+        raise ValueError(f"Unsupported capacity policy: {policy}")
+
+    # Get expert assignments in the selected processing order.
+    ordered_idx = flat_idx[order]
+
+    # Initially, all assignments are dropped.
+    keep = torch.zeros(
+        flat_idx.numel(),
+        dtype=torch.bool,
+        device=idx.device
+    )
+
+    # Each expert keeps only its first 'cap' assignments.
+    for expert in range(n_experts):
+        # Find positions belonging to the current expert.
+        positions = torch.nonzero(
+            ordered_idx == expert,
+            as_tuple=True
+        )[0]
+
+        # Keep only the first 'cap' assignments.
+        positions = positions[:cap]
+
+        # Map the selected positions back to their original indices.
+        keep[order[positions]] = True
+
+    # Restore the original (N, k) shape.
+    return keep.reshape(N, k)
+

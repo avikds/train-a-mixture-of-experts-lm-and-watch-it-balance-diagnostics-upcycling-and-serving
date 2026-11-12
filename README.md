@@ -18,6 +18,7 @@ python scaffold.py
 - [x] **6.** route_tokens
 - [x] **7.** router_z_loss
 - [x] **8.** load_balance_loss
+- [x] **9.** apply_capacity
 
 ---
 
