@@ -593,7 +593,7 @@ class MoEFFN(nn.Module):
                 dim=-1
             ).mean(dim=0)
 
-            # Store the exact diagnostic keys expected by Deep-ML.
+            # Store the exact diagnostic keys.
             self.stats = {
                 "counts": counts.detach(),
                 "idx": idx.detach(),
