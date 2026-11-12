@@ -453,3 +453,156 @@ def apply_capacity(idx, w, n_experts, capacity_factor, policy="probs"):
     # Restore the original (N, k) shape.
     return keep.reshape(N, k)
 
+# Step 10 - MoEFFN
+class MoEFFN(nn.Module):
+    def __init__(self, d, n_experts, hidden, k, score="softmax", renorm=True, scale=1.0):
+        super().__init__()
+
+        # Store routing configuration.
+        self.n_experts = n_experts
+        self.k = k
+        self.score = score
+        self.renorm = renorm
+        self.scale = scale
+
+        # Learned, bias-free router.
+        self.router = nn.Linear(d, n_experts, bias=False)
+
+        # Expert-specific weight matrices.
+        self.w1 = nn.Parameter(
+            torch.randn(n_experts, d, hidden) * d ** -0.5
+        )
+
+        self.w2 = nn.Parameter(
+            torch.randn(n_experts, hidden, d) * hidden ** -0.5
+        )
+
+        # Selection-only bias buffer.
+        self.register_buffer(
+            "bias",
+            torch.zeros(n_experts)
+        )
+
+        # Capacity and serving configuration.
+        self.capacity_factor = None
+        self.drop_policy = "probs"
+        self.serve_k = None
+        self.denom_k = None
+
+        # Store diagnostics from the latest forward pass.
+        self.stats = {}
+
+    def forward(self, x):
+        # Preserve the original input shape.
+        original_shape = x.shape
+
+        # Flatten all leading dimensions into the token dimension.
+        h = x.reshape(-1, original_shape[-1])
+        N = h.shape[0]
+
+        # Calculate router logits.
+        logits = self.router(h)
+
+        # Select the routing k (training or serving).
+        k = self.serve_k if self.serve_k is not None else self.k
+
+        # Calculate expert indices, mixing weights and routing scores.
+        idx, w, s = route_tokens(
+            logits,
+            k,
+            self.score,
+            self.renorm,
+            self.scale,
+            self.bias,
+            self.denom_k
+        )
+
+        # Initially, all selected assignments are retained.
+        kept = torch.ones_like(idx, dtype=torch.bool)
+
+        # Apply the expert capacity constraint when configured.
+        if self.capacity_factor is not None:
+            kept = apply_capacity(
+                idx,
+                w,
+                self.n_experts,
+                self.capacity_factor,
+                self.drop_policy
+            )
+
+            # Zero the weights of dropped assignments.
+            w = w * kept.to(w.dtype)
+
+        # Compute every expert's output for every token.
+        expert_outputs = torch.stack(
+            [
+                F.gelu(h @ self.w1[e]) @ self.w2[e]
+                for e in range(self.n_experts)
+            ],
+            dim=1
+        )
+
+        # Construct the dense expert mixing matrix.
+        gate = torch.zeros(
+            (N, self.n_experts),
+            dtype=w.dtype,
+            device=w.device
+        )
+
+        # Accumulate the selected expert weights.
+        gate.scatter_add_(1, idx, w)
+
+        # Combine expert outputs using the routing weights.
+        y = (
+            expert_outputs
+            * gate.to(expert_outputs.dtype).unsqueeze(-1)
+        ).sum(dim=1)
+
+        # Restore the original input dimensions.
+        y = y.reshape(original_shape)
+
+        # Calculate router auxiliary losses.
+        # These retain their computation graphs for training.
+        self.aux = load_balance_loss(
+            s,
+            idx,
+            self.n_experts
+        )
+
+        self.z = router_z_loss(logits)
+
+        # Record diagnostics without retaining gradients.
+        with torch.no_grad():
+
+            # Number of retained assignments per expert.
+            counts = torch.bincount(
+                idx[kept].reshape(-1),
+                minlength=self.n_experts
+            )
+
+            # Per-token log-sum-exp of router logits.
+            lse = torch.logsumexp(
+                logits.float(),
+                dim=-1
+            )
+
+            # Mean L2 output norm of each expert.
+            out_norm = torch.linalg.vector_norm(
+                expert_outputs.detach().float(),
+                ord=2,
+                dim=-1
+            ).mean(dim=0)
+
+            # Store the exact diagnostic keys expected by Deep-ML.
+            self.stats = {
+                "counts": counts.detach(),
+                "idx": idx.detach(),
+                "weights": w.detach(),
+                "scores": s.detach(),
+                "kept": kept.detach(),
+                "lse": lse.detach(),
+                "out_norm": out_norm.detach()
+            }
+
+        return y
+
