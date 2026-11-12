@@ -1243,3 +1243,110 @@ def upcycle_model(dense, make_moe, delta=1e-5):
 
     return moe
 
+# Step 22 - RunMonitor
+class RunMonitor:
+    def __init__(self, warmup=20, spike=10.0, margin=0.1,
+                 rogue=3.0, dead=0.2, collapse=1.5, ema=0.9):
+
+        # Monitoring configuration.
+        self.warmup = warmup
+        self.spike = spike
+        self.margin = margin
+        self.rogue = rogue
+        self.dead = dead
+        self.collapse = collapse
+        self.ema = ema
+
+        # Store the first warm-up gradient norms.
+        # The expected attribute name is 'grads'.
+        self.grads = []
+
+        # Exponential moving average of the training loss.
+        self.smooth = None
+
+        # Lowest smoothed loss observed so far.
+        self.best = float("inf")
+
+        # Record the first step at which each alarm fires.
+        self.first = {}
+
+    def update(self, step, loss, grad_norm, model):
+        alarms = []
+
+        # --------------------------------------------------
+        # 1. Update the smoothed training loss.
+        # --------------------------------------------------
+
+        if self.smooth is None:
+            self.smooth = float(loss)
+        else:
+            self.smooth = (
+                self.ema * self.smooth
+                + (1.0 - self.ema) * float(loss)
+            )
+
+        # --------------------------------------------------
+        # 2. Collect warm-up gradient norms.
+        # --------------------------------------------------
+
+        if len(self.grads) < self.warmup:
+            self.grads.append(float(grad_norm))
+
+        else:
+            # --------------------------------------------------
+            # 3. Detect an unusually large gradient norm.
+            # --------------------------------------------------
+
+            if (
+                self.grads
+                and grad_norm > self.spike * max(self.grads)
+            ):
+                alarms.append("grad_spike")
+
+            # --------------------------------------------------
+            # 4. Detect an increase in smoothed training loss.
+            # --------------------------------------------------
+
+            if self.smooth > self.best + self.margin:
+                alarms.append("loss_alarm")
+
+            # --------------------------------------------------
+            # 5. Check each MoE layer for expert-related problems.
+            # --------------------------------------------------
+
+            for i, layer in enumerate(model.moe_layers()):
+                stats = layer.stats
+
+                # Compare expert output norms against the median.
+                norm_hi, norm_lo = expert_norm_ratios(
+                    stats["out_norm"]
+                )
+
+                # Detect rogue experts.
+                if norm_hi > self.rogue:
+                    alarms.append(f"rogue_expert@{i}")
+
+                # Detect dead experts.
+                if norm_lo < self.dead:
+                    alarms.append(f"dead_expert@{i}")
+
+                # Detect routing collapse.
+                if max_vio(stats["counts"]) > self.collapse:
+                    alarms.append(f"collapse@{i}")
+
+        # --------------------------------------------------
+        # 6. Update the best smoothed loss.
+        # --------------------------------------------------
+
+        self.best = min(self.best, self.smooth)
+
+        # --------------------------------------------------
+        # 7. Record the earliest occurrence of each alarm.
+        # --------------------------------------------------
+
+        for alarm in alarms:
+            if alarm not in self.first:
+                self.first[alarm] = step
+
+        return alarms
+
