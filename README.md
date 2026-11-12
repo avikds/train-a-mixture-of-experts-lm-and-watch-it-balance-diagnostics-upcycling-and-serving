@@ -30,6 +30,7 @@ python scaffold.py
 - [x] **18.** quantile_bias
 - [x] **19.** evaluate_lm
 - [x] **20.** train_lm
+- [x] **21.** upcycle_model
 
 ---
 

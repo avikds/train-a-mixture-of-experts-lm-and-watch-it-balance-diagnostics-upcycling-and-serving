@@ -1158,3 +1158,88 @@ def train_lm(model, tokens, steps, batch=16, lr=3e-3, seed=0, balance="none", au
 
     return history
 
+# Step 21 - upcycle_model
+def upcycle_model(dense, make_moe, delta=1e-5):
+    # Build the new MoE model.
+    moe = make_moe()
+
+    # Copy every dense model weight and buffer that is not part
+    # of a feed-forward module.
+    non_ffn_state = {
+        k: v
+        for k, v in dense.state_dict().items()
+        if ".ffn." not in k
+    }
+
+    moe.load_state_dict(
+        non_ffn_state,
+        strict=False
+    )
+
+    # Convert the dense feed-forward layers into MoE experts.
+    with torch.no_grad():
+
+        for dense_block, moe_block in zip(dense.blocks, moe.blocks):
+
+            dense_ffn = dense_block.ffn
+            moe_ffn = moe_block.ffn
+
+            # Dense and expert hidden dimensions.
+            H = dense_ffn.w1.shape[1]
+            h = moe_ffn.w1.shape[2]
+
+            # Number of hidden slices required to reconstruct
+            # the original dense feed-forward layer.
+            if H % h != 0:
+                raise ValueError(
+                    "Dense hidden width must be divisible by expert hidden width."
+                )
+
+            G = H // h
+
+            # Exact parity requires the router to select all G slices.
+            if G != moe_ffn.k:
+                raise ValueError(
+                    f"Expert granularity G={G} must equal top-k={moe_ffn.k}."
+                )
+
+            if G > moe_ffn.n_experts:
+                raise ValueError(
+                    "Expert granularity cannot exceed the number of experts."
+                )
+
+            # Copy dense hidden slices into individual experts.
+            for e in range(moe_ffn.n_experts):
+
+                # Repeat the corresponding dense slice if there
+                # are more experts than hidden slices.
+                j = e % G
+
+                start = j * h
+                end = (j + 1) * h
+
+                # Copy the first expert weight matrix.
+                moe_ffn.w1[e].copy_(
+                    dense_ffn.w1[:, start:end]
+                )
+
+                # Copy the second expert weight matrix.
+                # Multiplication by G compensates for top-k averaging.
+                moe_ffn.w2[e].copy_(
+                    dense_ffn.w2[start:end, :] * G
+                )
+
+            # Initialize the router to produce identical logits.
+            moe_ffn.router.weight.zero_()
+
+            # Initialize the selection-only expert bias.
+            moe_ffn.bias.zero_()
+
+            # Give the first G experts a small selection advantage.
+            moe_ffn.bias[:G].fill_(delta)
+
+    # Preserve the dense model's training/evaluation mode.
+    moe.train(dense.training)
+
+    return moe
+
