@@ -23,6 +23,7 @@ python scaffold.py
 - [x] **11.** param_counts
 - [x] **12.** max_vio
 - [x] **13.** router_sharpness
+- [x] **14.** expert_norm_ratios
 
 ---
 

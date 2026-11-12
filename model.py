@@ -707,3 +707,21 @@ def router_sharpness(scores, weights):
 
     return result
 
+# Step 14 - expert_norm_ratios
+def expert_norm_ratios(norms):
+    # Convert the input into a float64 PyTorch tensor.
+    norms = torch.as_tensor(norms, dtype=torch.float64)
+
+    # Calculate the median using the 0.5 quantile.
+    median = torch.quantile(norms, 0.5)
+
+    # Calculate the largest and smallest norm relative to the median.
+    max_ratio = norms.max() / median
+    min_ratio = norms.min() / median
+
+    # Return both ratios as Python floats.
+    return (
+        float(max_ratio.item()),
+        float(min_ratio.item())
+    )
+
