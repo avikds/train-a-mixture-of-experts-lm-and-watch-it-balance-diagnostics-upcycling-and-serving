@@ -33,6 +33,7 @@ python scaffold.py
 - [x] **21.** upcycle_model
 - [x] **22.** RunMonitor
 - [x] **23.** ExpertUpdateBug
+- [x] **24.** set_serving
 
 ---
 

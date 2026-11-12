@@ -1395,3 +1395,13 @@ class ExpertUpdateBug:
                 old_w2 + self.factor * (new_w2 - old_w2)
             )
 
+# Step 24 - set_serving
+def set_serving(model, k=None, denom_k=None):
+    # Configure serving-time routing for every MoE layer.
+    for layer in model.moe_layers():
+        layer.serve_k = k
+        layer.denom_k = denom_k
+
+    # Return the updated model.
+    return model
+
