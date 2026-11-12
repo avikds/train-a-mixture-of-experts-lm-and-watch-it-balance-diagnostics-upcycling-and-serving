@@ -193,3 +193,116 @@ class DenseFFN(nn.Module):
         # Apply the first linear transformation, GELU, and the second transformation.
         return F.gelu(x @ self.w1) @ self.w2
 
+# Step 5 - TinyLM
+class Block(nn.Module):
+    def __init__(self, d, n_heads, ffn):
+        super().__init__()
+
+        # Pre-normalization for attention.
+        self.ln1 = nn.LayerNorm(d)
+
+        # Combined query, key, and value projection.
+        self.qkv = nn.Linear(d, 3 * d, bias=False)
+
+        # Output projection after attention.
+        self.proj = nn.Linear(d, d, bias=False)
+
+        # Pre-normalization for the feed-forward module.
+        self.ln2 = nn.LayerNorm(d)
+
+        # Pluggable feed-forward module (DenseFFN or MoE).
+        self.ffn = ffn
+
+        self.n_heads = n_heads
+        self.head_dim = d // n_heads
+
+    def forward(self, x):
+        B, T, d = x.shape
+
+        # Normalize the input before attention.
+        h = self.ln1(x)
+
+        # Compute query, key, and value.
+        q, k, v = self.qkv(h).split(d, dim=-1)
+
+        # Reshape into multiple attention heads.
+        q = q.reshape(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        k = k.reshape(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.reshape(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Apply causal scaled dot-product attention.
+        attn = F.scaled_dot_product_attention(
+            q, k, v,
+            is_causal=True
+        )
+
+        # Merge attention heads back into the model dimension.
+        attn = attn.transpose(1, 2).contiguous().reshape(B, T, d)
+
+        # Attention output projection and residual connection.
+        x = x + self.proj(attn)
+
+        # Apply the feed-forward module with pre-normalization
+        # and its residual connection.
+        x = x + self.ffn(self.ln2(x))
+
+        return x
+
+
+class TinyLM(nn.Module):
+    def __init__(self, vocab, d, n_layers, seq_len, make_ffn, n_heads=2):
+        super().__init__()
+
+        # Token embeddings.
+        self.tok = nn.Embedding(vocab, d)
+
+        # Positional embeddings.
+        self.pos = nn.Embedding(seq_len, d)
+
+        # Transformer blocks with a separately created FFN per layer.
+        self.blocks = nn.ModuleList([
+            Block(d, n_heads, make_ffn(i))
+            for i in range(n_layers)
+        ])
+
+        # Final layer normalization.
+        self.ln_f = nn.LayerNorm(d)
+
+        # Output projection to vocabulary logits.
+        self.head = nn.Linear(d, vocab, bias=False)
+
+        self.seq_len = seq_len
+
+    def forward(self, idx):
+        B, T = idx.shape
+
+        # Ensure the input sequence does not exceed the configured length.
+        if T > self.seq_len:
+            raise ValueError(
+                f"Sequence length {T} exceeds maximum length {self.seq_len}."
+            )
+
+        # Generate positional indices on the same device as the input.
+        positions = torch.arange(T, device=idx.device)
+
+        # Combine token and positional embeddings.
+        x = self.tok(idx) + self.pos(positions)[None, :, :]
+
+        # Pass through all Transformer blocks.
+        for block in self.blocks:
+            x = block(x)
+
+        # Final normalization and vocabulary projection.
+        x = self.ln_f(x)
+        logits = self.head(x)
+
+        return logits
+
+    def moe_layers(self):
+        # Return feed-forward modules containing a router.
+        return [
+            block.ffn
+            for block in self.blocks
+            if hasattr(block.ffn, "router")
+        ]
+

@@ -14,6 +14,7 @@ python scaffold.py
 - [x] **2.** sample_corpus
 - [x] **3.** entropy_floor
 - [x] **4.** DenseFFN
+- [x] **5.** TinyLM
 
 ---
 
