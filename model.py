@@ -119,3 +119,54 @@ def sample_corpus(P, mix, n_seq, seq_len, seed):
         torch.from_numpy(domains)
     )
 
+# Step 3 - entropy_floor
+def entropy_floor(P, mix, seq_len):
+    # Convert P to a float64 NumPy array.
+    if isinstance(P, torch.Tensor):
+        P = P.detach().cpu().numpy()
+
+    P = np.asarray(P, dtype=np.float64)
+
+    # Normalize the domain mixture weights.
+    mix = np.asarray(mix, dtype=np.float64)
+    weights = mix / mix.sum()
+
+    n_domains = P.shape[0]
+    domain_floors = np.zeros(n_domains, dtype=np.float64)
+
+    for d in range(n_domains):
+        # Get the stationary distribution for this domain.
+        pi = stationary(P[d], iters=500)
+
+        # Calculate the entropy of the stationary distribution.
+        # Zero-probability terms contribute zero to entropy.
+        positive_pi = pi > 0
+        H_pi = -np.sum(
+            pi[positive_pi] * np.log(pi[positive_pi])
+        )
+
+        # Calculate the entropy of every transition row.
+        P_d = P[d]
+
+        positive_P = P_d > 0
+        log_terms = np.zeros_like(P_d, dtype=np.float64)
+
+        log_terms[positive_P] = (
+            P_d[positive_P] * np.log(P_d[positive_P])
+        )
+
+        row_entropies = -np.sum(log_terms, axis=1)
+
+        # Expected transition entropy under the stationary distribution.
+        expected_transition_entropy = np.sum(
+            pi * row_entropies
+        )
+
+        # Calculate the average entropy floor for this domain.
+        domain_floors[d] = (
+            H_pi + (seq_len - 1) * expected_transition_entropy
+        ) / seq_len
+
+    # Calculate the mixture-weighted entropy floor.
+    return float(np.sum(weights * domain_floors))
+
