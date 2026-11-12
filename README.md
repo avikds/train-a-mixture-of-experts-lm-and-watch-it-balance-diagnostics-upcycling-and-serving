@@ -17,6 +17,7 @@ python scaffold.py
 - [x] **5.** TinyLM
 - [x] **6.** route_tokens
 - [x] **7.** router_z_loss
+- [x] **8.** load_balance_loss
 
 ---
 

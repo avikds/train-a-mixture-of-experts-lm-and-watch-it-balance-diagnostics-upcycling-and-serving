@@ -372,3 +372,24 @@ def router_z_loss(logits):
     # Return the mean squared log-sum-exp over all tokens.
     return (log_z ** 2).mean()
 
+# Step 8 - load_balance_loss
+def load_balance_loss(scores, idx, n_experts):
+    # Normalize each token's routing scores to sum to 1.
+    # This also converts sigmoid scores into a probability distribution.
+    scores = scores / scores.sum(dim=-1, keepdim=True)
+
+    # Flatten expert assignments and count assignments per expert.
+    counts = torch.bincount(
+        idx.reshape(-1),
+        minlength=n_experts
+    )
+
+    # Fraction of all assignments received by each expert.
+    f = counts.to(dtype=scores.dtype) / idx.numel()
+
+    # Mean normalized routing score for each expert.
+    P = scores.mean(dim=0)
+
+    # Switch-style load-balancing loss.
+    return n_experts * (f * P).sum()
+
