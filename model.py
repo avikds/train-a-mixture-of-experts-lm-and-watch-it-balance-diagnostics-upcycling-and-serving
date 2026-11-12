@@ -653,3 +653,57 @@ def max_vio(counts):
     # Return a Python float.
     return float(max_violation.item())
 
+# Step 13 - router_sharpness
+def router_sharpness(scores, weights):
+    # Convert scores and weights to float32 for numerical stability.
+    scores = scores.float()
+    weights = weights.float()
+
+    # Normalize routing scores row-wise to obtain probability distributions.
+    p = scores / scores.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
+    # Calculate entropy for each token.
+    entropy_per_token = -(
+        p * torch.log(p.clamp_min(1e-12))
+    ).sum(dim=-1)
+
+    # Mean routing entropy across all tokens.
+    entropy = entropy_per_token.mean()
+
+    # Find the largest mixing weight for each token.
+    top_weights = weights.max(dim=-1).values
+
+    # Mean largest mixing weight across tokens.
+    top_weight = top_weights.mean()
+
+    # Calculate the L2 norm of the final mixing weights per token.
+    routed_size = torch.sqrt(
+        (weights ** 2).sum(dim=-1)
+    ).mean()
+
+    # Collect the diagnostic metrics.
+    result = {
+        "entropy": float(entropy.detach().item()),
+        "top_weight": float(top_weight.detach().item()),
+        "routed_size": float(routed_size.detach().item())
+    }
+
+    # Calculate the largest-to-second-largest weight ratio when k > 1.
+    if weights.shape[-1] > 1:
+        top_two = torch.topk(
+            weights,
+            k=2,
+            dim=-1
+        ).values
+
+        max1_over_max2 = (
+            top_two[:, 0] /
+            top_two[:, 1].clamp_min(1e-12)
+        ).mean()
+
+        result["max1_over_max2"] = float(
+            max1_over_max2.detach().item()
+        )
+
+    return result
+

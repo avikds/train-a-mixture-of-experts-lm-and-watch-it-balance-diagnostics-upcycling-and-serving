@@ -22,6 +22,7 @@ python scaffold.py
 - [x] **10.** MoEFFN
 - [x] **11.** param_counts
 - [x] **12.** max_vio
+- [x] **13.** router_sharpness
 
 ---
 
