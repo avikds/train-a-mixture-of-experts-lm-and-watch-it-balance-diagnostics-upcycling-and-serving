@@ -15,6 +15,7 @@ python scaffold.py
 - [x] **3.** entropy_floor
 - [x] **4.** DenseFFN
 - [x] **5.** TinyLM
+- [x] **6.** route_tokens
 
 ---
 

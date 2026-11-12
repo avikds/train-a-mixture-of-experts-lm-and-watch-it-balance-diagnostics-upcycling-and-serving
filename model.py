@@ -306,3 +306,58 @@ class TinyLM(nn.Module):
             if hasattr(block.ffn, "router")
         ]
 
+# Step 6 - route_tokens
+def route_tokens(logits, k, score="softmax", renorm=True, scale=1.0, bias=None, denom_k=None):
+    # Perform routing calculations in float32 for numerical stability.
+    logits = logits.float()
+
+    # Calculate routing scores.
+    if score == "softmax":
+        s = torch.softmax(logits, dim=-1)
+    elif score == "sigmoid":
+        s = torch.sigmoid(logits)
+    else:
+        raise ValueError(f"Unsupported routing score: {score}")
+
+    # Apply the optional bias only for expert selection.
+    # The original scores s remain unchanged.
+    if bias is not None:
+        bias = torch.as_tensor(
+            bias,
+            dtype=s.dtype,
+            device=s.device
+        )
+        selection_scores = s + bias
+    else:
+        selection_scores = s
+
+    # Select the top-k experts using the biased selection scores.
+    idx = torch.topk(
+        selection_scores,
+        k=k,
+        dim=-1
+    ).indices
+
+    # Gather the original, unbiased scores of the selected experts.
+    w = s.gather(-1, idx)
+
+    # Normalize the selected weights.
+    if denom_k is not None:
+        # Divide by the sum of the denom_k largest unbiased scores.
+        denominator = torch.topk(
+            s,
+            k=denom_k,
+            dim=-1
+        ).values.sum(dim=-1, keepdim=True)
+
+        w = w / denominator
+
+    elif renorm:
+        # Normalize using only the selected experts.
+        w = w / w.sum(dim=-1, keepdim=True)
+
+    # Apply the routing scaling factor.
+    w = w * scale
+
+    return idx, w, s
+
