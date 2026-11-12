@@ -927,3 +927,50 @@ def quantile_bias(scores, k, bias):
     # Return the new bias in the original bias dtype.
     return new_bias.to(dtype=bias.dtype)
 
+# Step 19 - evaluate_lm
+def evaluate_lm(model, tokens, batch=64):
+    # Remember the model's original training/evaluation mode.
+    was_training = model.training
+
+    total_loss = 0.0
+    total_targets = 0
+
+    try:
+        # Switch the model to evaluation mode.
+        model.eval()
+
+        # Disable gradient computation during evaluation.
+        with torch.no_grad():
+
+            # Process the sequences in batches.
+            for start in range(0, tokens.shape[0], batch):
+                end = min(start + batch, tokens.shape[0])
+
+                batch_tokens = tokens[start:end]
+
+                # Inputs contain all tokens except the last one.
+                inputs = batch_tokens[:, :-1]
+
+                # Targets contain all tokens except the first one.
+                targets = batch_tokens[:, 1:]
+
+                # Obtain vocabulary logits from the model.
+                logits = model(inputs)
+
+                # Calculate summed cross-entropy over all target tokens.
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.shape[-1]),
+                    targets.reshape(-1),
+                    reduction="sum"
+                )
+
+                total_loss += loss.item()
+                total_targets += targets.numel()
+
+        # Return mean next-token cross-entropy.
+        return float(total_loss / total_targets)
+
+    finally:
+        # Restore the model's original mode.
+        model.train(was_training)
+

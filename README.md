@@ -28,6 +28,7 @@ python scaffold.py
 - [x] **16.** layer_dashboard
 - [x] **17.** update_expert_bias
 - [x] **18.** quantile_bias
+- [x] **19.** evaluate_lm
 
 ---
 
