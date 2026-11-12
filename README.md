@@ -20,6 +20,7 @@ python scaffold.py
 - [x] **8.** load_balance_loss
 - [x] **9.** apply_capacity
 - [x] **10.** MoEFFN
+- [x] **11.** param_counts
 
 ---
 

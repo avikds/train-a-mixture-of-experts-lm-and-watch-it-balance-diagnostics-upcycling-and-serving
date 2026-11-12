@@ -606,3 +606,32 @@ class MoEFFN(nn.Module):
 
         return y
 
+# Step 11 - param_counts
+def param_counts(model):
+    # Count all model parameters. Buffers are excluded automatically.
+    total = sum(
+        p.numel() for p in model.parameters()
+    )
+
+    # Initially, assume every parameter is active.
+    active = total
+
+    # Subtract parameters belonging to experts not selected per token.
+    for layer in model.moe_layers():
+        # Number of experts not used by a token.
+        inactive_experts = layer.n_experts - layer.k
+
+        # Parameters belonging to one expert.
+        expert_params = (
+            layer.w1[0].numel()
+            + layer.w2[0].numel()
+        )
+
+        # Remove inactive expert parameters from the active count.
+        active -= inactive_experts * expert_params
+
+    return {
+        "total": int(total),
+        "active": int(active)
+    }
+
