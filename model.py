@@ -361,3 +361,14 @@ def route_tokens(logits, k, score="softmax", renorm=True, scale=1.0, bias=None, 
 
     return idx, w, s
 
+# Step 7 - router_z_loss
+def router_z_loss(logits):
+    # Convert logits to float32 for numerical stability.
+    logits = logits.float()
+
+    # Calculate log-sum-exp across the expert dimension.
+    log_z = torch.logsumexp(logits, dim=-1)
+
+    # Return the mean squared log-sum-exp over all tokens.
+    return (log_z ** 2).mean()
+
