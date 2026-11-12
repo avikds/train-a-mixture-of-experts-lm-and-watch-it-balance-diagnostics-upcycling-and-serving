@@ -852,3 +852,39 @@ def layer_dashboard(model, x, domains=None, n_domains=8):
         # Restore the model's original mode, even if an error occurs.
         model.train(was_training)
 
+# Step 17 - update_expert_bias
+def update_expert_bias(bias, counts, rate, rule="sign"):
+    # Convert expert counts to float64 for accurate calculations.
+    counts = torch.as_tensor(
+        counts,
+        dtype=torch.float64,
+        device=bias.device
+    )
+
+    # Calculate the mean expert load and the load error.
+    mean_load = counts.mean()
+    error = mean_load - counts
+
+    # Calculate the balancing step according to the selected rule.
+    if rule == "sign":
+        step = torch.sign(error)
+
+    elif rule == "centered":
+        signs = torch.sign(error)
+        step = signs - signs.mean()
+
+    elif rule == "linear":
+        # Avoid division by zero when all experts have zero load.
+        if mean_load.item() == 0:
+            step = torch.zeros_like(error)
+        else:
+            step = error / mean_load
+
+    else:
+        raise ValueError(f"Unsupported balancing rule: {rule}")
+
+    # Apply the update and preserve the original bias dtype.
+    updated_bias = bias.to(torch.float64) + rate * step
+
+    return updated_bias.to(dtype=bias.dtype)
+

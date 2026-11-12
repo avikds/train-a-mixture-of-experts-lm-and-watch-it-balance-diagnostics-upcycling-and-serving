@@ -26,6 +26,7 @@ python scaffold.py
 - [x] **14.** expert_norm_ratios
 - [x] **15.** domain_purity
 - [x] **16.** layer_dashboard
+- [x] **17.** update_expert_bias
 
 ---
 
